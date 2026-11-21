@@ -182,16 +182,24 @@ TEXT ·cop2SealBlocks(SB), NOSPLIT|NOFRAME, $0-80
 	MOVV 8(R16), R9
 	DMTC2(8, GFM_RESINP0)
 	DMTC2(9, GFM_RESINP0+1)
-sealloop:
 	OR R7, R12, R14
 	DMTC2(6, AES_ENC0)
 	DMTC2(14, AES_ENC1)
+sealloop:
 	LDL(10, 4, 0)
 	LDR(10, 4, 7)
 	LDL(11, 4, 8)
 	LDR(11, 4, 15)
 	DMFC2(8, AES_RESULT0)
 	DMFC2(9, AES_RESULT0+1)
+	ADDVU $-1, R5
+	BEQ R5, seallast
+	// Overlap the next AES block with this block's GHASH and stores.
+	ADDVU $1, R12
+	AND R13, R12
+	OR R7, R12, R14
+	DMTC2(6, AES_ENC0)
+	DMTC2(14, AES_ENC1)
 	XOR R10, R8
 	XOR R11, R9
 	DMTC2(8, GFM_XOR0)
@@ -200,12 +208,18 @@ sealloop:
 	SDR(8, 3, 7)
 	SDL(9, 3, 8)
 	SDR(9, 3, 15)
-	ADDVU $1, R12
-	AND R13, R12
 	ADDVU $16, R3
 	ADDVU $16, R4
-	ADDVU $-1, R5
-	BNE R5, sealloop
+	JMP sealloop
+seallast:
+	XOR R10, R8
+	XOR R11, R9
+	DMTC2(8, GFM_XOR0)
+	DMTC2(9, GFM_XORMUL1)
+	SDL(8, 3, 0)
+	SDR(8, 3, 7)
+	SDL(9, 3, 8)
+	SDR(9, 3, 15)
 	DMFC2(8, GFM_RESINP0)
 	DMFC2(9, GFM_RESINP0+1)
 	MOVV R8, 0(R16)
