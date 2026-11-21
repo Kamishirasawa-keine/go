@@ -30,7 +30,10 @@ type cop2Block [2]uint64
 func cop2AES(key *[4]uint64, keyLen uint64, blocks *cop2Block, n int)
 
 //go:noescape
-func cop2GHASH(h, state, blocks *cop2Block, n int)
+func cop2GHASH(h, state *cop2Block, blocks *byte, n int)
+
+//go:noescape
+func cop2CTR(key *[4]uint64, keyLen uint64, dst, src *byte, n int, hi, prefix, ctr uint64)
 
 func cop2Key(g *GCM, nonce []byte, key *[4]uint64) (uint64, bool) {
 	if !cpu.OcteonCOP2 || fips140.Enabled || len(nonce) != gcmStandardNonceSize || g.tagSize != gcmTagSize {
@@ -81,58 +84,43 @@ func cop2Init(key *[4]uint64, keyLen uint64, nonce []byte) (j0, h, tagMask cop2B
 }
 
 func cop2Crypt(key *[4]uint64, keyLen uint64, j0 cop2Block, out, in []byte) {
-	var blocks [cop2Batch]cop2Block
 	prefix := j0[1] &^ 0xffffffff
 	ctr := uint32(j0[1]) + 1
-	for len(in) != 0 {
-		batch := min(len(in), len(blocks)*gcmBlockSize)
-		n := (batch + gcmBlockSize - 1) / gcmBlockSize
-		for i := range n {
-			blocks[i] = cop2Block{j0[0], prefix | uint64(ctr)}
-			ctr++
-		}
-		cop2AES(key, keyLen, &blocks[0], n)
-		for _, mask := range blocks[:n] {
-			if len(in) < gcmBlockSize {
-				var tail [gcmBlockSize]byte
-				byteorder.BEPutUint64(tail[:8], mask[0])
-				byteorder.BEPutUint64(tail[8:], mask[1])
-				subtle.XORBytes(out, in, tail[:len(in)])
-				return
-			}
-			x := byteorder.BEUint64(in[:8]) ^ mask[0]
-			y := byteorder.BEUint64(in[8:16]) ^ mask[1]
-			byteorder.BEPutUint64(out[:8], x)
-			byteorder.BEPutUint64(out[8:16], y)
-			in, out = in[16:], out[16:]
-		}
+	for len(in) >= gcmBlockSize {
+		n := min(cop2Batch, len(in)/gcmBlockSize)
+		cop2CTR(key, keyLen, &out[0], &in[0], n, j0[0], prefix, uint64(ctr))
+		ctr += uint32(n)
+		in, out = in[n*gcmBlockSize:], out[n*gcmBlockSize:]
+	}
+	if len(in) != 0 {
+		mask := cop2Block{j0[0], prefix | uint64(ctr)}
+		cop2AES(key, keyLen, &mask, 1)
+		var tail [gcmBlockSize]byte
+		byteorder.BEPutUint64(tail[:8], mask[0])
+		byteorder.BEPutUint64(tail[8:], mask[1])
+		subtle.XORBytes(out, in, tail[:len(in)])
 	}
 }
 
 func cop2Auth(h *cop2Block, tagMask cop2Block, ciphertext, data []byte) (tag [gcmTagSize]byte) {
 	var state cop2Block
-	var blocks [cop2Batch]cop2Block
 	for _, input := range [2][]byte{data, ciphertext} {
+		for len(input) >= gcmBlockSize {
+			n := min(cop2Batch, len(input)/gcmBlockSize)
+			cop2GHASH(h, &state, &input[0], n)
+			input = input[n*gcmBlockSize:]
+		}
 		// Each input is separately zero-padded to a block boundary.
-		for len(input) != 0 {
-			n := 0
-			for n < len(blocks) && len(input) >= gcmBlockSize {
-				blocks[n] = cop2Block{byteorder.BEUint64(input[:8]), byteorder.BEUint64(input[8:16])}
-				input = input[16:]
-				n++
-			}
-			if n < len(blocks) && len(input) != 0 {
-				var tail [gcmBlockSize]byte
-				copy(tail[:], input)
-				blocks[n] = cop2Block{byteorder.BEUint64(tail[:8]), byteorder.BEUint64(tail[8:])}
-				input = nil
-				n++
-			}
-			cop2GHASH(h, &state, &blocks[0], n)
+		if len(input) != 0 {
+			var tail [gcmBlockSize]byte
+			copy(tail[:], input)
+			cop2GHASH(h, &state, &tail[0], 1)
 		}
 	}
-	lengths := cop2Block{uint64(len(data)) * 8, uint64(len(ciphertext)) * 8}
-	cop2GHASH(h, &state, &lengths, 1)
+	var lengths [gcmBlockSize]byte
+	byteorder.BEPutUint64(lengths[:8], uint64(len(data))*8)
+	byteorder.BEPutUint64(lengths[8:], uint64(len(ciphertext))*8)
+	cop2GHASH(h, &state, &lengths[0], 1)
 	byteorder.BEPutUint64(tag[:8], state[0]^tagMask[0])
 	byteorder.BEPutUint64(tag[8:], state[1]^tagMask[1])
 	return tag

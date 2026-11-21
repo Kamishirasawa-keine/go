@@ -11,6 +11,12 @@
 // 16-bit selectors, as named in the Cavium cvmx-asm.h AES and GFM macros.
 #define DMTC2(rt, selector) WORD $(0x48a00000 | ((rt) << 16) | (selector))
 #define DMFC2(rt, selector) WORD $(0x48200000 | ((rt) << 16) | (selector))
+// Paired big-endian unaligned memory operations. For an eight-byte word,
+// the left instruction addresses its first byte and the right its last.
+#define LDL(rt, base, off) WORD $(0x68000000 | ((base) << 21) | ((rt) << 16) | (off))
+#define LDR(rt, base, off) WORD $(0x6c000000 | ((base) << 21) | ((rt) << 16) | (off))
+#define SDL(rt, base, off) WORD $(0xb0000000 | ((base) << 21) | ((rt) << 16) | (off))
+#define SDR(rt, base, off) WORD $(0xb4000000 | ((base) << 21) | ((rt) << 16) | (off))
 #define AES_KEY0       0x0104
 #define AES_KEYLEN     0x0110
 #define AES_ENC0       0x010a
@@ -72,8 +78,10 @@ TEXT ·cop2GHASH(SB), NOSPLIT|NOFRAME, $0-32
 	DMTC2(8, GFM_RESINP0)
 	DMTC2(9, GFM_RESINP0+1)
 ghashloop:
-	MOVV 0(R3), R8
-	MOVV 8(R3), R9
+	LDL(8, 3, 0)
+	LDR(8, 3, 7)
+	LDL(9, 3, 8)
+	LDR(9, 3, 15)
 	DMTC2(8, GFM_XOR0)
 	DMTC2(9, GFM_XORMUL1)
 	ADDV $16, R3
@@ -83,4 +91,48 @@ ghashloop:
 	DMFC2(9, GFM_RESINP0+1)
 	MOVV R8, 0(R2)
 	MOVV R9, 8(R2)
+	RET
+
+TEXT ·cop2CTR(SB), NOSPLIT|NOFRAME, $0-64
+	PCDATA $PCDATA_UnsafePoint, $-2
+	MOVV key+0(FP), R1
+	MOVV keyLen+8(FP), R2
+	MOVV dst+16(FP), R3
+	MOVV src+24(FP), R4
+	MOVV n+32(FP), R5
+	MOVV hi+40(FP), R6
+	MOVV prefix+48(FP), R7
+	MOVV ctr+56(FP), R12
+	MOVV $0xffffffff, R13
+	MOVV 0(R1), R8
+	MOVV 8(R1), R9
+	MOVV 16(R1), R10
+	MOVV 24(R1), R11
+	DMTC2(8, AES_KEY0)
+	DMTC2(9, AES_KEY0+1)
+	DMTC2(10, AES_KEY0+2)
+	DMTC2(11, AES_KEY0+3)
+	DMTC2(2, AES_KEYLEN)
+ctrloop:
+	OR R7, R12, R14
+	DMTC2(6, AES_ENC0)
+	DMTC2(14, AES_ENC1)
+	LDL(10, 4, 0)
+	LDR(10, 4, 7)
+	LDL(11, 4, 8)
+	LDR(11, 4, 15)
+	DMFC2(8, AES_RESULT0)
+	DMFC2(9, AES_RESULT0+1)
+	XOR R10, R8
+	XOR R11, R9
+	SDL(8, 3, 0)
+	SDR(8, 3, 7)
+	SDL(9, 3, 8)
+	SDR(9, 3, 15)
+	ADDVU $1, R12
+	AND R13, R12
+	ADDVU $16, R3
+	ADDVU $16, R4
+	ADDVU $-1, R5
+	BNE R5, ctrloop
 	RET

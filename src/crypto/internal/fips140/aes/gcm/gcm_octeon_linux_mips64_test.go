@@ -11,8 +11,11 @@ import (
 	"crypto/internal/fips140"
 	"crypto/internal/fips140/aes"
 	"crypto/internal/fips140deps/cpu"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"syscall"
 	"testing"
 )
 
@@ -90,8 +93,8 @@ func TestCOP2AgainstGeneric(t *testing.T) {
 			nonce := [12]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, byte(worker)}
 			for _, n := range []int{0, 1, 15, 16, 17, 511, 512, 513, 1024, 16384} {
 				for _, aadLen := range []int{0, 1, 16, 513} {
-					storage := make([]byte, 1+n+16)
-					buf := storage[1:]
+					storage := make([]byte, 8+n+16)
+					buf := storage[worker/2:][:n+16]
 					plain := buf[:n]
 					for i := range plain {
 						plain[i] = byte(i*13 + worker)
@@ -118,6 +121,62 @@ func TestCOP2AgainstGeneric(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCOP2CrossPageAndCounterWrap(t *testing.T) {
+	requireCOP2(t)
+	page := os.Getpagesize()
+	mem, err := syscall.Mmap(-1, 0, 3*page, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_PRIVATE|syscall.MAP_ANON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Munmap(mem)
+	if err := syscall.Mprotect(mem[2*page:], syscall.PROT_NONE); err != nil {
+		t.Fatal(err)
+	}
+	g := newCOP2TestGCM(t, make([]byte, 16), 12, 16)
+	nonce := make([]byte, 12)
+	var key [4]uint64
+	keyLen, ok := cop2Key(g, nonce, &key)
+	if !ok {
+		t.Fatal("COP2 dispatch disabled")
+	}
+	// (Un)aligned words crossing a mapped boundary and a tail ending
+	// immediately before a guard page. Also exercise the AAD input path.
+	for _, buf := range [][]byte{mem[page-7 : page+58], mem[2*page-65 : 2*page]} {
+		for i := range buf {
+			buf[i] = byte(i*17 + 1)
+		}
+		plain := bytes.Clone(buf[:len(buf)-16])
+		aad := mem[page-5 : page+20]
+		want := make([]byte, len(buf))
+		sealGeneric(want, g, nonce, plain, aad)
+		// The AAD and output must not overlap; use the cross-page slice
+		// directly as AAD only when output is next to the guard page.
+		if &buf[0] == &mem[page-7] {
+			aad = bytes.Clone(aad)
+		}
+		if got := g.Seal(buf[:0], nonce, buf[:len(plain)], aad); !bytes.Equal(got, want) {
+			t.Fatal("cross-page Seal mismatch")
+		}
+		if got, err := g.Open(buf[:0], nonce, buf, aad); err != nil || !bytes.Equal(got, plain) {
+			t.Fatalf("cross-page Open mismatch: %v", err)
+		}
+	}
+	for _, start := range []uint32{0xfffffffe, 0xffffffdf} {
+		j0 := cop2Block{0x123456789abcdef0, 0xdeadbeef00000000 | uint64(start)}
+		var ctr [16]byte
+		binary.BigEndian.PutUint64(ctr[:8], j0[0])
+		binary.BigEndian.PutUint64(ctr[8:], j0[1])
+		gcmInc32(&ctr)
+		in := bytes.Repeat([]byte{0xa5}, 2*cop2Batch*16+1)
+		want, got := make([]byte, len(in)), make([]byte, len(in))
+		gcmCounterCryptGeneric(&g.cipher, want, in, &ctr)
+		cop2Crypt(&key, keyLen, j0, got, in)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("counter wrap from %#x: mismatch", start)
+		}
 	}
 }
 
