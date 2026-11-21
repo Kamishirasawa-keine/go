@@ -17,6 +17,10 @@ const (
 	PPC64le   = goarch.IsPpc64le == 1
 )
 
+// OcteonCOP2 reports operator opt-in on a separately verified ER4. It is
+// not a CPU feature probe: Linux MIPS does not expose AES/GFM in HWCAP.
+var OcteonCOP2 bool
+
 var (
 	ARM64HasAES    = cpu.ARM64.HasAES
 	ARM64HasPMULL  = cpu.ARM64.HasPMULL

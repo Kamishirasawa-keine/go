@@ -11,8 +11,10 @@ import (
 	"crypto/des"
 	"crypto/hmac"
 	"crypto/internal/boring"
+	"crypto/internal/fips140"
 	fipsaes "crypto/internal/fips140/aes"
 	"crypto/internal/fips140/aes/gcm"
+	fipscpu "crypto/internal/fips140deps/cpu"
 	"crypto/rc4"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -365,7 +367,10 @@ var (
 	hasGCMAsmS390X = cpu.S390X.HasAES && cpu.S390X.HasAESCTR && cpu.S390X.HasGHASH
 	hasGCMAsmPPC64 = runtime.GOARCH == "ppc64" || runtime.GOARCH == "ppc64le"
 
-	hasAESGCMHardwareSupport = hasGCMAsmAMD64 || hasGCMAsmARM64 || hasGCMAsmS390X || hasGCMAsmPPC64
+	// Frozen FIPS snapshots do not include the COP2 backend, even if FIPS mode is off.
+	hasGCMAsmOcteon = fipscpu.OcteonCOP2 && !fips140.Enabled && fips140.Version() == "latest"
+
+	hasAESGCMHardwareSupport = hasGCMAsmAMD64 || hasGCMAsmARM64 || hasGCMAsmS390X || hasGCMAsmPPC64 || hasGCMAsmOcteon
 )
 
 var aesgcmCiphers = map[uint16]bool{
