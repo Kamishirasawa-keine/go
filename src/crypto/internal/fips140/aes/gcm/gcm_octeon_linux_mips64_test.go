@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"crypto/internal/fips140"
 	"crypto/internal/fips140/aes"
-	"crypto/internal/fips140deps/cpu"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -40,7 +39,7 @@ func TestCOP2Fallback(t *testing.T) {
 		nonce := make([]byte, tc.nonce)
 		var key [4]uint64
 		_, got := cop2Key(g, nonce, &key)
-		want := cpu.OcteonCOP2 && !fips140.Enabled && tc.key != 24 && tc.nonce == 12 && tc.tag == 16
+		want := !fips140.Enabled && tc.key != 24 && tc.nonce == 12 && tc.tag == 16
 		if got != want {
 			t.Fatalf("key/nonce/tag %v: COP2 dispatch = %v, want %v", tc, got, want)
 		}
@@ -49,8 +48,8 @@ func TestCOP2Fallback(t *testing.T) {
 
 func requireCOP2(t testing.TB) {
 	t.Helper()
-	if !cpu.OcteonCOP2 || fips140.Enabled {
-		t.Skip("requires GODEBUG=octeoncop2=er4,fips140=off on ER4")
+	if fips140.Enabled {
+		t.Skip("COP2 is disabled in FIPS mode")
 	}
 }
 
@@ -176,6 +175,18 @@ func TestCOP2CrossPageAndCounterWrap(t *testing.T) {
 		cop2Crypt(&key, keyLen, j0, got, in)
 		if !bytes.Equal(got, want) {
 			t.Fatalf("counter wrap from %#x: mismatch", start)
+		}
+		// Verify the fused encryption loop independently at the same wrap
+		// points, with a nonzero accumulator carried across batches.
+		_, h, _ := cop2Init(&key, keyLen, nonce)
+		state, expected := cop2Block{1, 2}, cop2Block{1, 2}
+		const batchBytes = cop2Batch * gcmBlockSize
+		for offset := 0; offset < 2*batchBytes; offset += batchBytes {
+			cop2SealBlocks(&key, keyLen, &got[offset], &in[offset], cop2Batch, j0[0], j0[1]&^0xffffffff, uint64(start+1+uint32(offset/gcmBlockSize)), &h, &state)
+			cop2GHASH(&h, &expected, &want[offset], cop2Batch)
+		}
+		if !bytes.Equal(got[:2*batchBytes], want[:2*batchBytes]) || state != expected {
+			t.Fatalf("fused counter wrap from %#x: mismatch", start)
 		}
 	}
 }

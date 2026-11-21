@@ -11,7 +11,6 @@ import (
 	"crypto/internal/fips140/aes"
 	"crypto/internal/fips140/subtle"
 	"crypto/internal/fips140deps/byteorder"
-	"crypto/internal/fips140deps/cpu"
 )
 
 func checkGenericIsExpected() {}
@@ -38,7 +37,7 @@ func cop2CTR(key *[4]uint64, keyLen uint64, dst, src *byte, n int, hi, prefix, c
 func cop2SealBlocks(key *[4]uint64, keyLen uint64, dst, src *byte, n int, hi, prefix, ctr uint64, h, state *cop2Block)
 
 func cop2Key(g *GCM, nonce []byte, key *[4]uint64) (uint64, bool) {
-	if !cpu.OcteonCOP2 || fips140.Enabled || len(nonce) != gcmStandardNonceSize || g.tagSize != gcmTagSize {
+	if fips140.Enabled || len(nonce) != gcmStandardNonceSize || g.tagSize != gcmTagSize {
 		return 0, false
 	}
 	return aes.COP2Key(&g.cipher, key)

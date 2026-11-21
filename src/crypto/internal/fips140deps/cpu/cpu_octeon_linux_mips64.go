@@ -6,10 +6,6 @@
 
 package cpu
 
-import "crypto/internal/fips140deps/godebug"
-
-func init() {
-	// This setting asserts that the deployment has verified AES and GFM
-	// support on this ER4. Do not issue trial COP2 instructions in-process.
-	OcteonCOP2 = godebug.Value("#octeoncop2") == "er4"
-}
+// Building with octeoncop2 asserts that the deployment has verified user-mode
+// AES and GFM on its target. Linux MIPS HWCAP does not report these features.
+const OcteonCOP2 = true
