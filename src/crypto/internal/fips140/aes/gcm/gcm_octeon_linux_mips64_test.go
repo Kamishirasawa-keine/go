@@ -91,7 +91,7 @@ func TestCOP2AgainstGeneric(t *testing.T) {
 			}
 			g := newCOP2TestGCM(t, key, 12, 16)
 			nonce := [12]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, byte(worker)}
-			for _, n := range []int{0, 1, 15, 16, 17, 511, 512, 513, 1024, 16384} {
+			for _, n := range []int{0, 1, 15, 16, 17, 496, 497, 511, 512, 513, 528, 529, 1024, 16384} {
 				for _, aadLen := range []int{0, 1, 16, 513} {
 					storage := make([]byte, 8+n+16)
 					buf := storage[worker/2:][:n+16]

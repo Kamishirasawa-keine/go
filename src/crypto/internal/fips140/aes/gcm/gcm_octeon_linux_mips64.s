@@ -113,28 +113,40 @@ TEXT ·cop2CTR(SB), NOSPLIT|NOFRAME, $0-64
 	DMTC2(10, AES_KEY0+2)
 	DMTC2(11, AES_KEY0+3)
 	DMTC2(2, AES_KEYLEN)
-ctrloop:
 	OR R7, R12, R14
 	DMTC2(6, AES_ENC0)
 	DMTC2(14, AES_ENC1)
+ctrloop:
 	LDL(10, 4, 0)
 	LDR(10, 4, 7)
 	LDL(11, 4, 8)
 	LDR(11, 4, 15)
 	DMFC2(8, AES_RESULT0)
 	DMFC2(9, AES_RESULT0+1)
+	ADDVU $-1, R5
+	BEQ R5, ctrlast
+	// Start the next AES operation before XOR and stores for this block.
+	ADDVU $1, R12
+	AND R13, R12
+	OR R7, R12, R14
+	DMTC2(6, AES_ENC0)
+	DMTC2(14, AES_ENC1)
 	XOR R10, R8
 	XOR R11, R9
 	SDL(8, 3, 0)
 	SDR(8, 3, 7)
 	SDL(9, 3, 8)
 	SDR(9, 3, 15)
-	ADDVU $1, R12
-	AND R13, R12
 	ADDVU $16, R3
 	ADDVU $16, R4
-	ADDVU $-1, R5
-	BNE R5, ctrloop
+	JMP ctrloop
+ctrlast:
+	XOR R10, R8
+	XOR R11, R9
+	SDL(8, 3, 0)
+	SDR(8, 3, 7)
+	SDL(9, 3, 8)
+	SDR(9, 3, 15)
 	RET
 
 // Encrypt full blocks and feed the ciphertext directly into GHASH.
