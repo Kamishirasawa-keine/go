@@ -36,9 +36,7 @@ func TestCOP2Fallback(t *testing.T) {
 		{16, 12, 16}, {32, 12, 16}, {24, 12, 16}, {16, 13, 16}, {16, 12, 13},
 	} {
 		g := newCOP2TestGCM(t, make([]byte, tc.key), tc.nonce, tc.tag)
-		nonce := make([]byte, tc.nonce)
-		var key [4]uint64
-		_, got := cop2Key(g, nonce, &key)
+		got := g.keyLen != 0
 		want := !fips140.Enabled && tc.key != 24 && tc.nonce == 12 && tc.tag == 16
 		if got != want {
 			t.Fatalf("key/nonce/tag %v: COP2 dispatch = %v, want %v", tc, got, want)
@@ -90,7 +88,8 @@ func TestCOP2AgainstGeneric(t *testing.T) {
 			}
 			g := newCOP2TestGCM(t, key, 12, 16)
 			nonce := [12]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, byte(worker)}
-			for _, n := range []int{0, 1, 15, 16, 17, 496, 497, 511, 512, 513, 528, 529, 1024, 16384} {
+			const batch = cop2Batch * gcmBlockSize
+			for _, n := range []int{0, 1, 15, 16, 17, 496, 497, 511, 512, 513, 528, 529, 1024, batch - 1, batch, batch + 1, 16384} {
 				for _, aadLen := range []int{0, 1, 16, 513} {
 					storage := make([]byte, 8+n+16)
 					buf := storage[worker/2:][:n+16]
@@ -123,6 +122,30 @@ func TestCOP2AgainstGeneric(t *testing.T) {
 	}
 }
 
+func TestCOP2SharedGCM(t *testing.T) {
+	requireCOP2(t)
+	g := newCOP2TestGCM(t, make([]byte, 32), 12, 16)
+	for i := range 16 {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			t.Parallel()
+			var nonce [12]byte
+			nonce[0] = byte(i)
+			p := bytes.Repeat([]byte{byte(i)}, cop2Batch*gcmBlockSize+i)
+			want := make([]byte, len(p)+gcmTagSize)
+			for j := range 4 {
+				nonce[1] = byte(j)
+				sealGeneric(want, g, nonce[:], p, nil)
+				if got := g.Seal(nil, nonce[:], p, nil); !bytes.Equal(got, want) {
+					t.Fatal("shared GCM Seal mismatch")
+				}
+				if got, err := g.Open(nil, nonce[:], want, nil); err != nil || !bytes.Equal(got, p) {
+					t.Fatalf("shared GCM Open mismatch: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestCOP2CrossPageAndCounterWrap(t *testing.T) {
 	requireCOP2(t)
 	page := os.Getpagesize()
@@ -136,9 +159,8 @@ func TestCOP2CrossPageAndCounterWrap(t *testing.T) {
 	}
 	g := newCOP2TestGCM(t, make([]byte, 16), 12, 16)
 	nonce := make([]byte, 12)
-	var key [4]uint64
-	keyLen, ok := cop2Key(g, nonce, &key)
-	if !ok {
+	key, keyLen := g.key, g.keyLen
+	if keyLen == 0 {
 		t.Fatal("COP2 dispatch disabled")
 	}
 	// (Un)aligned words crossing a mapped boundary and a tail ending
@@ -178,7 +200,7 @@ func TestCOP2CrossPageAndCounterWrap(t *testing.T) {
 		}
 		// Verify the fused encryption loop independently at the same wrap
 		// points, with a nonzero accumulator carried across batches.
-		_, h, _ := cop2Init(&key, keyLen, nonce)
+		h := g.h
 		state, expected := cop2Block{1, 2}, cop2Block{1, 2}
 		const batchBytes = cop2Batch * gcmBlockSize
 		for offset := 0; offset < 2*batchBytes; offset += batchBytes {

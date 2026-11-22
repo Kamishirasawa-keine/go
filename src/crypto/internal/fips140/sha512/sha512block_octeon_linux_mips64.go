@@ -9,7 +9,7 @@ package sha512
 import "crypto/internal/fips140"
 
 // Bound the amount of work without an asynchronous preemption point.
-const octeonSHA512Batch = 8
+const octeonSHA512Batch = 32 // 4 KiB per assembly call.
 
 //go:noescape
 func blockOcteon(state *[8]uint64, input *byte, n int)

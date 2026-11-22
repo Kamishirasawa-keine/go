@@ -21,7 +21,7 @@ func TestOcteonCompression(t *testing.T) {
 	}
 	for _, is224 := range []bool{false, true} {
 		for offset := range 8 {
-			for _, n := range []int{0, 1, 15, 16, 17, 32, 33} {
+			for _, n := range []int{0, 1, octeonSHA256Batch - 1, octeonSHA256Batch, octeonSHA256Batch + 1, 2*octeonSHA256Batch + 1} {
 				p := buf[offset:][:n*blockSize]
 				got := Digest{is224: is224}
 				got.Reset()

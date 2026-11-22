@@ -9,7 +9,7 @@ package sha256
 import "crypto/internal/fips140"
 
 // Limit time spent in assembly without an asynchronous preemption point.
-const octeonSHA256Batch = 16
+const octeonSHA256Batch = 64 // 4 KiB per assembly call.
 
 //go:noescape
 func blockOcteon(state *[8]uint32, input *byte, n int)

@@ -15,12 +15,26 @@ import (
 
 func checkGenericIsExpected() {}
 
-type gcmPlatformData struct{}
+// Initialized once and read-only after New. No COP2 register state is
+// assumed to survive between calls.
+type gcmPlatformData struct {
+	key    [4]uint64
+	keyLen uint64 // zero selects the generic implementation
+	h      cop2Block
+}
 
-func initGCM(g *GCM) {}
+func initGCM(g *GCM) {
+	if fips140.Enabled || g.nonceSize != gcmStandardNonceSize || g.tagSize != gcmTagSize {
+		return
+	}
+	if n, ok := aes.COP2Key(&g.cipher, &g.key); ok {
+		g.keyLen = n
+		cop2AES(&g.key, n, &g.h, 1) // H = AES_K(0).
+	}
+}
 
 // Batch blocks both to amortize setup and to bound the async-unsafe region.
-const cop2Batch = 32
+const cop2Batch = 128 // 2 KiB per assembly call.
 
 type cop2Block [2]uint64
 
@@ -36,65 +50,54 @@ func cop2CTR(key *[4]uint64, keyLen uint64, dst, src *byte, n int, hi, prefix, c
 //go:noescape
 func cop2SealBlocks(key *[4]uint64, keyLen uint64, dst, src *byte, n int, hi, prefix, ctr uint64, h, state *cop2Block)
 
-func cop2Key(g *GCM, nonce []byte, key *[4]uint64) (uint64, bool) {
-	if fips140.Enabled || len(nonce) != gcmStandardNonceSize || g.tagSize != gcmTagSize {
-		return 0, false
-	}
-	return aes.COP2Key(&g.cipher, key)
-}
-
 func seal(out []byte, g *GCM, nonce, plaintext, data []byte) {
-	var key [4]uint64
-	keyLen, ok := cop2Key(g, nonce, &key)
-	if !ok {
+	if g.keyLen == 0 {
 		sealGeneric(out, g, nonce, plaintext, data)
 		return
 	}
 
-	j0, h, tagMask := cop2Init(&key, keyLen, nonce)
+	j0, tagMask := g.cop2Init(nonce)
 	ciphertext := out[:len(plaintext)]
 	var state cop2Block
-	cop2HashInput(&h, &state, data)
+	cop2HashInput(&g.h, &state, data)
 	prefix, ctr := j0[1]&^0xffffffff, uint32(j0[1])+1
 	in, dst := plaintext, ciphertext
 	for len(in) >= gcmBlockSize {
 		n := min(cop2Batch, len(in)/gcmBlockSize)
-		cop2SealBlocks(&key, keyLen, &dst[0], &in[0], n, j0[0], prefix, uint64(ctr), &h, &state)
+		cop2SealBlocks(&g.key, g.keyLen, &dst[0], &in[0], n, j0[0], prefix, uint64(ctr), &g.h, &state)
 		ctr += uint32(n)
 		in, dst = in[n*gcmBlockSize:], dst[n*gcmBlockSize:]
 	}
 	if len(in) != 0 {
-		cop2CryptTail(&key, keyLen, cop2Block{j0[0], prefix | uint64(ctr)}, dst, in)
-		cop2HashInput(&h, &state, dst)
+		cop2CryptTail(&g.key, g.keyLen, cop2Block{j0[0], prefix | uint64(ctr)}, dst, in)
+		cop2HashInput(&g.h, &state, dst)
 	}
-	tag := cop2Tag(&h, &state, tagMask, len(ciphertext), len(data))
+	tag := cop2Tag(&g.h, &state, tagMask, len(ciphertext), len(data))
 	copy(out[len(plaintext):], tag[:])
 }
 
 func open(out []byte, g *GCM, nonce, ciphertext, data []byte) error {
-	var key [4]uint64
-	keyLen, ok := cop2Key(g, nonce, &key)
-	if !ok {
+	if g.keyLen == 0 {
 		return openGeneric(out, g, nonce, ciphertext, data)
 	}
 
-	j0, h, tagMask := cop2Init(&key, keyLen, nonce)
+	j0, tagMask := g.cop2Init(nonce)
 	n := len(ciphertext) - gcmTagSize
-	tag := cop2Auth(&h, tagMask, ciphertext[:n], data)
+	tag := cop2Auth(&g.h, tagMask, ciphertext[:n], data)
 	if subtle.ConstantTimeCompare(tag[:], ciphertext[n:]) != 1 {
 		return errOpen
 	}
-	cop2Crypt(&key, keyLen, j0, out, ciphertext[:n])
+	cop2Crypt(&g.key, g.keyLen, j0, out, ciphertext[:n])
 	return nil
 }
 
 // The standard 96-bit nonce is followed by a 32-bit counter. J0 has counter
 // value one; the first payload block uses counter value two.
-func cop2Init(key *[4]uint64, keyLen uint64, nonce []byte) (j0, h, tagMask cop2Block) {
+func (g *GCM) cop2Init(nonce []byte) (j0, tagMask cop2Block) {
 	j0 = cop2Block{byteorder.BEUint64(nonce), uint64(byteorder.BEUint32(nonce[8:]))<<32 | 1}
-	blocks := [2]cop2Block{{}, j0}
-	cop2AES(key, keyLen, &blocks[0], len(blocks))
-	return j0, blocks[0], blocks[1]
+	tagMask = j0
+	cop2AES(&g.key, g.keyLen, &tagMask, 1)
+	return j0, tagMask
 }
 
 func cop2Crypt(key *[4]uint64, keyLen uint64, j0 cop2Block, out, in []byte) {
